@@ -316,10 +316,22 @@ function App() {
           const currentTracks = tracksRef.current;
 
           currentTracks.forEach((track) => {
-            if (track.steps[nextStep].active && !track.muted) {
-              const anySolo = currentTracks.some((t) => t.solo);
-              if (anySolo && !track.solo) return;
-              playSound(track.type, track.volume, track.pan, track.audioBuffer);
+           const step = track.steps[nextStep];
+if (step.active && !track.muted) {
+  const anySolo = currentTracks.some((t) => t.solo);
+  if (anySolo && !track.solo) return;
+
+  const vel = typeof step.velocity === "number" ? step.velocity : 1;
+  const vol = Math.max(0, Math.min(1, track.volume * vel));
+
+  const swing = 0.14; // 0..0.25 good range for boom bap
+const isOdd16th = nextStep % 2 === 1;
+const swingSeconds = isOdd16th ? (60 / bpm / 4) * swing : 0;
+
+// schedule slightly later
+setTimeout(() => {
+  playSound(track.type, vol, track.pan, track.audioBuffer);
+}, swingSeconds * 1000);
             }
           });
 

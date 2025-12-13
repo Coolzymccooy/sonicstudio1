@@ -18,6 +18,8 @@ import {
 } from "lucide-react";
 
 import { generateBeatPattern } from "../services/geminiService";
+import { setMasterBassBoost, setMasterDrive, setGrooveFeel } from "../services/audioEngine";
+
 
 // ✅ Genres system
 import type { GenreDefinition } from "../genres/genreTypes";
@@ -56,6 +58,10 @@ const GENRE_COLOR: Record<string, string> = {
   synthwave: "text-pink-500",
 };
 
+// ===============================
+// BOOM BAP HELPER (HUMAN FEEL)
+// ===============================
+
 function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
 }
@@ -70,74 +76,59 @@ function chance(p: number) {
 
 type StepLike = { active: boolean; velocity?: number };
 
-// Creates a 16-step boom bap drumline with human feel
 function makeBoomBap16(opts?: {
-  swing?: number;        // 0..1
-  humanize?: number;     // 0..1
-  density?: number;      // 0..1
-  ghost?: number;        // 0..1
+  swing?: number;
+  humanize?: number;
+  density?: number;
+  ghost?: number;
 }) {
-  const swing = opts?.swing ?? 0.65;     // strong boom-bap shuffle feel
-  const humanize = opts?.humanize ?? 0.25;
-  const density = opts?.density ?? 0.55;
-  const ghost = opts?.ghost ?? 0.35;
+  const swing = opts?.swing ?? 0.7;
+  const humanize = opts?.humanize ?? 0.3;
+  const density = opts?.density ?? 0.6;
+  const ghost = opts?.ghost ?? 0.45;
 
-  // per-instrument lanes (0..1 intensity)
   const kick = new Array(16).fill(0);
   const snare = new Array(16).fill(0);
   const hat = new Array(16).fill(0);
 
-  // --- anchors (classic head-nod) ---
+  // BOOM (kick)
   kick[0] = 0.95;
   kick[8] = 0.75;
+  if (chance(density)) kick[6] = 0.55;
+  if (chance(density * 0.6)) kick[15] = 0.4;
 
+  // BAP (snare)
   snare[4] = 0.9;
   snare[12] = 0.9;
+  if (chance(ghost)) snare[3] = 0.18;
+  if (chance(ghost * 0.8)) snare[11] = 0.16;
 
-  // --- kick variations ---
-  if (chance(density * 0.8)) kick[6] = Math.max(kick[6], 0.55);   // push
-  if (chance(density * 0.6)) kick[10] = Math.max(kick[10], 0.45); // late
-  if (chance(density * 0.5)) kick[15] = Math.max(kick[15], 0.35); // pickup
-
-  // --- snare ghosts (very soft) ---
-  if (chance(ghost)) snare[3] = Math.max(snare[3], 0.18);
-  if (chance(ghost * 0.8)) snare[11] = Math.max(snare[11], 0.16);
-
-  // --- hats: swung 8ths-ish with human drift ---
+  // Hats (swung, loose)
   for (let i = 0; i < 16; i++) {
-    const is8th = i % 2 === 0; // 0,2,4,6...
-    const base = is8th ? 0.35 : 0.22;
+    const offbeat = i % 4 === 2;
+    const base = i % 2 === 0 ? 0.35 : 0.22;
+    const swingBoost = offbeat ? swing * 0.35 : 0;
 
-    // swing: make offbeats “lighter” but present
-    const offbeat = i % 4 === 2; // 2,6,10,14
-    const swingBias = offbeat ? (0.15 + swing * 0.35) : 0;
-
-    const p = (is8th ? 0.9 : 0.55) * (0.55 + density * 0.45);
-    if (chance(p)) {
-      hat[i] = clamp01(base + swingBias + rand(-0.06, 0.08));
+    if (chance(0.6 + density * 0.3)) {
+      hat[i] = clamp01(base + swingBoost + rand(-0.06, 0.08));
     }
   }
 
-  // convert intensity lanes to steps (velocity included)
-  const mkSteps = (lane: number[]): StepLike[] =>
+  const toSteps = (lane: number[]): StepLike[] =>
     lane.map((v, i) => {
-      const active = v > 0.01;
-      if (!active) return { active: false, velocity: 0 };
-
-      // Humanize velocity more on offbeats
-      const off = i % 4 === 2;
-      const drift = rand(-humanize, humanize) * (off ? 0.18 : 0.12);
-      const vel = clamp01(v + drift);
-
-      return { active: true, velocity: vel };
+      if (v <= 0.01) return { active: false, velocity: 0 };
+      const drift = rand(-humanize, humanize) * 0.15;
+      return { active: true, velocity: clamp01(v + drift) };
     });
 
   return {
-    kick: mkSteps(kick),
-    snare: mkSteps(snare),
-    hat: mkSteps(hat),
+    kick: toSteps(kick),
+    snare: toSteps(snare),
+    hat: toSteps(hat),
   };
 }
+
+
 
 
 export const Grade1Mode: React.FC<Grade1ModeProps> = ({
@@ -162,6 +153,17 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
   const [selectedVariations, setSelectedVariations] = useState<number[]>([]); // 1..10
 
   const [showAddMenu, setShowAddMenu] = useState(false);
+
+  // One-time “studio feel” defaults for Grade 1 mode
+React.useEffect(() => {
+  // Massive low end + safe loudness (still protected by limiter)
+  setMasterBassBoost(0.9);   // 0..1
+  setMasterDrive(0.35);      // 0..1
+
+  // Vintage head-nod feel (timing swing/humanize)
+  setGrooveFeel({ swing: 0.35, humanizeMs: 18 });
+}, []);
+
 
   const allExpanded = useMemo(
     () => tracks.every((t) => expandedTracks.has(t.id)),
@@ -214,70 +216,72 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
   setIsGenerating(true);
 
   try {
-    // 🎧 BOOM-BAP HUMAN ENGINE (no clearing, no randomness wipe)
+    // If user selected a genre + variation, apply that first
+    const last = selectedVariations[selectedVariations.length - 1] ?? 1;
+    const variationIdx = Math.max(0, Math.min(selectedGenre?.variations.length ? selectedGenre.variations.length - 1 : 0, last - 1));
+
+    const baseTracks =
+      selectedGenre ? applyGenre(tracks, selectedGenre, variationIdx) : tracks;
+
+    // Then overlay the “human boom-bap” drum engine on top (does NOT nuke everything)
     const boom = makeBoomBap16({
-      swing: 0.7,       // vintage MPC swing
-      humanize: 0.35,   // loose timing feel
-      density: 0.55,    // head-nod, not busy
-      ghost: 0.45,      // ghost snares
+      swing: 0.75,
+      humanize: 0.35,
+      density: 0.6,
+      ghost: 0.55,
     });
 
-    const newTracks = tracks.map((t) => {
+    const merged = baseTracks.map((t) => {
+      // ✅ DRUMS: blend boom-bap into whatever is already there
       if (t.type === "DRUMS") {
-        // Merge kick + snare + hat into DRUMS lane
         const steps = t.steps.map((s, i) => {
           const k = boom.kick[i];
           const sn = boom.snare[i];
           const h = boom.hat[i];
 
-          const active = k.active || sn.active || h.active;
-          const velocity = Math.max(
-            k.velocity ?? 0,
-            sn.velocity ?? 0,
-            h.velocity ?? 0
-          );
+          const boomActive = k.active || sn.active || h.active;
+          const boomVel = Math.max(k.velocity ?? 0, sn.velocity ?? 0, h.velocity ?? 0);
 
-          return {
-            ...s,
-            active,
-            velocity,
-          };
+          // Blend: keep existing hits, add boom hits
+          const active = s.active || boomActive;
+
+          // If already active, keep the stronger velocity
+          const velocity = Math.max((s as any).velocity ?? 0, boomVel);
+
+          return { ...s, active, velocity };
         });
 
         return { ...t, steps };
       }
 
-      // 🎹 Jazzy instruments: sparse + human
-      if (
-        t.type === "PIANO" ||
-        t.type === "SYNTH" ||
-        t.type === "STRINGS"
-      ) {
-        const steps = t.steps.map((s, i) => {
-          const play =
-            i % 4 === 0 && Math.random() < 0.45; // chord stabs
-          return {
-            ...s,
-            active: play,
-            velocity: play ? 0.35 + Math.random() * 0.25 : 0,
-          };
-        });
-
-        return { ...t, steps };
-      }
-
-      // 🎸 Bass (upright-style bounce)
+      // ✅ BASS / 808: keep genre pattern, but add a little “bounce” only (light overlay)
       if (t.type === "BASS" || t.type === "808") {
         const steps = t.steps.map((s, i) => {
-          const play =
-            i === 0 ||
-            i === 8 ||
-            (Math.random() < 0.25 && i % 2 === 1);
-          return {
-            ...s,
-            active: play,
-            velocity: play ? 0.45 + Math.random() * 0.3 : 0,
-          };
+          // add a little movement but don’t destroy existing
+          const add =
+            (i === 0 || i === 8 || (i % 4 === 3 && Math.random() < 0.25));
+
+          const active = s.active || add;
+          const velocity = active
+            ? Math.max((s as any).velocity ?? 0, add ? 0.55 + Math.random() * 0.25 : 0)
+            : 0;
+
+          return { ...s, active, velocity };
+        });
+
+        return { ...t, steps };
+      }
+
+      // ✅ PIANO/SYNTH/STRINGS: jazz stabs overlay (sparse), preserve existing
+      if (t.type === "PIANO" || t.type === "SYNTH" || t.type === "STRINGS") {
+        const steps = t.steps.map((s, i) => {
+          const stab = i % 4 === 0 && Math.random() < 0.35; // sparse
+          const active = s.active || stab;
+          const velocity = active
+            ? Math.max((s as any).velocity ?? 0, stab ? 0.35 + Math.random() * 0.25 : 0)
+            : 0;
+
+          return { ...s, active, velocity };
         });
 
         return { ...t, steps };
@@ -286,11 +290,12 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
       return t;
     });
 
-    onUpdateTracks(newTracks);
+    onUpdateTracks(merged);
   } finally {
     setIsGenerating(false);
   }
 };
+
 
 
   return (
