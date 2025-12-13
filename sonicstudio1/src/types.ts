@@ -107,3 +107,5 @@ export interface AudioDeviceSettings {
   aiEnhanceEnabled: boolean; // New AI Voice Treat Bypass
   latencyCompensation: number; // ms
 }
+
+
