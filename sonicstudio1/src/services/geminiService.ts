@@ -94,7 +94,7 @@ export const generateBeatPattern = async (genre: string, currentTracks: Track[])
     // Map result back to the order of currentTracks
     // Default to empty arrays if something fails
     const mappedPatterns = currentTracks.map(track => {
-      const found = result.patterns?.find((p: any) => 
+      const found = result.patterns?.find((p: { instrumentName: string; steps: boolean[] }) =>
         p.instrumentName.toLowerCase().includes(track.name.toLowerCase()) || 
         track.name.toLowerCase().includes(p.instrumentName.toLowerCase())
       );
@@ -110,7 +110,7 @@ export const generateBeatPattern = async (genre: string, currentTracks: Track[])
   }
 };
 
-export const analyzeIntent = async (prompt: string): Promise<{ action: string, parameters: any, reply: string }> => {
+export const analyzeIntent = async (prompt: string): Promise<{ action: string, parameters: Record<string, string>, reply: string }> => {
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",

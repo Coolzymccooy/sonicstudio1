@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowRight, Mic2, Music4, Zap, Layers, Play, CheckCircle, Clock, Radio } from 'lucide-react';
+import { ArrowRight, Mic2, Zap, Layers, CheckCircle, Clock, Radio } from 'lucide-react';
 import { mockBackend } from '../services/mockBackend';
 
 interface LandingPageProps {
@@ -8,7 +8,7 @@ interface LandingPageProps {
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({ onEnter, onOpenAuth }) => {
-  const [hoveredCard, setHoveredCard] = useState<number | null>(null);
+  const [, _setHoveredCard] = useState<number | null>(null);
   const [waitlistEmail, setWaitlistEmail] = useState('');
   const [waitlistStatus, setWaitlistStatus] = useState<'IDLE'|'LOADING'|'SUCCESS'>('IDLE');
 

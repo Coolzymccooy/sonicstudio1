@@ -41,7 +41,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onLoginSu
         setSuccessMsg("Password reset link sent to your email.");
         setMode('LOGIN');
       }
-    } catch (err) {
+    } catch {
       setError("Authentication failed. Please check your credentials.");
     } finally {
       setIsLoading(false);

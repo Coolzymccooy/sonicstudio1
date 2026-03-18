@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { InstrumentType } from "../types";
 import type { Track } from "../types";
 import {
@@ -15,9 +15,12 @@ import {
   X,
   Plus,
   Save,
+  Sparkles,
+  Shuffle,
+  Database,
 } from "lucide-react";
 
-import { generateBeatPattern } from "../services/geminiService";
+// import { generateBeatPattern } from "../services/geminiService";
 import { setMasterBassBoost, setMasterDrive, setGrooveFeel } from "../services/audioEngine";
 
 
@@ -28,6 +31,8 @@ import { applyGenre } from "../genres/applyGenre";
 
 interface Grade1ModeProps {
   tracks: Track[];
+  bpm: number;
+  onSetBpm: (newBpm: number) => void;
   isPlaying: boolean;
   currentStep: number;
   onTogglePlay: () => void;
@@ -36,8 +41,12 @@ interface Grade1ModeProps {
   onRecordMic: (trackId: string) => void;
   isRecording: boolean;
   onAddTrack: (type: InstrumentType, name: string) => void;
+  onPlayNote?: (midi: number) => void;
   onSaveProject?: () => void;
 }
+
+const _VOCAL_KEYBOARD_BASE_MIDI = 60; // C4
+const VOCAL_KEYBOARD_KEYS = 12; // one octave
 
 const NEW_INSTRUMENTS = [
   { type: InstrumentType.PIANO, name: "Piano", icon: "🎹" },
@@ -46,6 +55,8 @@ const NEW_INSTRUMENTS = [
   { type: InstrumentType.EIGHT_OH_EIGHT, name: "808 Bass", icon: "💣" },
   { type: InstrumentType.VOCAL, name: "New Vocal", icon: "🎤" },
 ];
+
+
 
 // Optional: small colour mapping for genre cards (safe Tailwind classes)
 const GENRE_COLOR: Record<string, string> = {
@@ -115,7 +126,7 @@ function makeBoomBap16(opts?: {
   }
 
   const toSteps = (lane: number[]): StepLike[] =>
-    lane.map((v, i) => {
+    lane.map((v, _i) => {
       if (v <= 0.01) return { active: false, velocity: 0 };
       const drift = rand(-humanize, humanize) * 0.15;
       return { active: true, velocity: clamp01(v + drift) };
@@ -133,6 +144,8 @@ function makeBoomBap16(opts?: {
 
 export const Grade1Mode: React.FC<Grade1ModeProps> = ({
   tracks,
+  bpm,
+  onSetBpm,
   isPlaying,
   currentStep,
   onTogglePlay,
@@ -141,6 +154,7 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
   onRecordMic,
   isRecording,
   onAddTrack,
+  onPlayNote,
   onSaveProject,
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -149,20 +163,53 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
   );
 
   // ✅ Genre selection state (replaces selectedInstrumental)
+  type SectionName = "Intro" | "Verse" | "Chorus" | "Bridge";
+  interface SectionSlot {
+    name: SectionName;
+    tracks: Track[];
+    savedAt: string;
+  }
+
+  const SECTION_NAMES: SectionName[] = ["Intro", "Verse", "Chorus", "Bridge"];
+
   const [selectedGenre, setSelectedGenre] = useState<GenreDefinition | null>(null);
   const [selectedVariations, setSelectedVariations] = useState<number[]>([]); // 1..10
-
+  const [showPatternLibrary, setShowPatternLibrary] = useState(false);
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [quickLoop, setQuickLoop] = useState(true);
+  const [liveSwing, setLiveSwing] = useState(0.35);
+  const [liveHumanize, setLiveHumanize] = useState(18);
+  const [selectedSection, setSelectedSection] = useState<SectionName>("Intro");
+  const [sections, setSections] = useState<Record<SectionName, SectionSlot | null>>({
+    Intro: null,
+    Verse: null,
+    Chorus: null,
+    Bridge: null,
+  });
+  const [arranger, setArranger] = useState<Array<{id: string; name: string; section: SectionName; tracks: Track[]; savedAt: string;}>>([]);
+  const [vocalBaseMidi, setVocalBaseMidi] = useState(48); // C3 base (Oct buttons adjust)
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  const midiChannelByInstrument: Record<InstrumentType, number> = {
+    [InstrumentType.DRUMS]: 10,
+    [InstrumentType.BASS]: 2,
+    [InstrumentType.SYNTH]: 3,
+    [InstrumentType.VOCAL]: 4,
+    [InstrumentType.PIANO]: 1,
+    [InstrumentType.GUITAR]: 5,
+    [InstrumentType.STRINGS]: 6,
+    [InstrumentType.EIGHT_OH_EIGHT]: 11,
+  };
 
   // One-time “studio feel” defaults for Grade 1 mode
-React.useEffect(() => {
-  // Massive low end + safe loudness (still protected by limiter)
-  setMasterBassBoost(0.9);   // 0..1
-  setMasterDrive(0.35);      // 0..1
+  useEffect(() => {
+    // Massive low end + safe loudness (still protected by limiter)
+    setMasterBassBoost(0.9); // 0..1
+    setMasterDrive(0.35); // 0..1
 
-  // Vintage head-nod feel (timing swing/humanize)
-  setGrooveFeel({ swing: 0.35, humanizeMs: 18 });
-}, []);
+    // Vintage head-nod feel (timing swing/humanize)
+    setGrooveFeel({ swing: 0.35, humanizeMs: 18 });
+  }, []);
 
 
   const allExpanded = useMemo(
@@ -211,112 +258,462 @@ React.useEffect(() => {
     setSelectedGenre(null);
   };
 
-  // ✅ Magic Beat: uses either chosen genre+variations, or fallback vibe
- const handleMagicButton = async () => {
-  setIsGenerating(true);
-
-  try {
-    // If user selected a genre + variation, apply that first
-    const last = selectedVariations[selectedVariations.length - 1] ?? 1;
-    const variationIdx = Math.max(0, Math.min(selectedGenre?.variations.length ? selectedGenre.variations.length - 1 : 0, last - 1));
-
-    const baseTracks =
-      selectedGenre ? applyGenre(tracks, selectedGenre, variationIdx) : tracks;
-
-    // Then overlay the “human boom-bap” drum engine on top (does NOT nuke everything)
-    const boom = makeBoomBap16({
-      swing: 0.75,
-      humanize: 0.35,
-      density: 0.6,
-      ghost: 0.55,
-    });
-
-    const merged = baseTracks.map((t) => {
-      // ✅ DRUMS: blend boom-bap into whatever is already there
+  const fillCurrentPattern = useCallback(() => {
+    const filled = tracks.map((t) => {
       if (t.type === "DRUMS") {
-        const steps = t.steps.map((s, i) => {
-          const k = boom.kick[i];
-          const sn = boom.snare[i];
-          const h = boom.hat[i];
-
-          const boomActive = k.active || sn.active || h.active;
-          const boomVel = Math.max(k.velocity ?? 0, sn.velocity ?? 0, h.velocity ?? 0);
-
-          // Blend: keep existing hits, add boom hits
-          const active = s.active || boomActive;
-
-          // If already active, keep the stronger velocity
-          const velocity = Math.max((s as any).velocity ?? 0, boomVel);
-
-          return { ...s, active, velocity };
-        });
-
-        return { ...t, steps };
+        return {
+          ...t,
+          steps: t.steps.map((s, i) => ({
+            ...s,
+            active: i % 2 === 0 ? true : s.active,
+            velocity: i % 2 === 0 ? 0.7 : s.velocity,
+          })),
+        };
       }
+      return {
+        ...t,
+        steps: t.steps.map((s, i) => ({
+          ...s,
+          active: i % 4 === 0 ? true : s.active,
+          velocity: i % 4 === 0 ? 0.6 : s.velocity,
+        })),
+      };
+    });
+    onUpdateTracks(filled);
+  }, [tracks, onUpdateTracks]);
 
-      // ✅ BASS / 808: keep genre pattern, but add a little “bounce” only (light overlay)
-      if (t.type === "BASS" || t.type === "808") {
-        const steps = t.steps.map((s, i) => {
-          // add a little movement but don’t destroy existing
-          const add =
-            (i === 0 || i === 8 || (i % 4 === 3 && Math.random() < 0.25));
+  const applyGroove = useCallback(() => {
+    setGrooveFeel({ swing: liveSwing, humanizeMs: liveHumanize });
+  }, [liveSwing, liveHumanize]);
 
-          const active = s.active || add;
-          const velocity = active
-            ? Math.max((s as any).velocity ?? 0, add ? 0.55 + Math.random() * 0.25 : 0)
-            : 0;
+  const showStatus = (text: string) => {
+    setStatusMessage(text);
+    window.setTimeout(() => setStatusMessage((prev) => (prev === text ? null : prev)), 2000);
+  };
 
-          return { ...s, active, velocity };
-        });
+  const saveSectionPattern = (name: SectionName) => {
+    setSections((prev) => ({
+      ...prev,
+      [name]: {
+        name,
+        tracks: JSON.parse(JSON.stringify(tracks)),
+        savedAt: new Date().toLocaleTimeString(),
+      },
+    }));
+    showStatus(`${name} saved`);
+  };
 
-        return { ...t, steps };
+  const loadSectionPattern = (name: SectionName) => {
+    const section = sections[name];
+    if (!section) {
+      showStatus(`${name} is empty, save first`);
+      return;
+    }
+    onUpdateTracks(JSON.parse(JSON.stringify(section.tracks)));
+    showStatus(`${name} loaded`);
+  };
+
+  const clearSectionPattern = (name: SectionName) => {
+    setSections((prev) => ({ ...prev, [name]: null }));
+    showStatus(`${name} cleared`);
+  };
+
+  const addSectionToArranger = (name: SectionName) => {
+    const section = sections[name];
+    if (!section) {
+      showStatus(`No ${name} section to add`);
+      return;
+    }
+    setArranger((prev) => [
+      ...prev,
+      {
+        id: `${name}-${Date.now()}`,
+        name: `${name} (${prev.length + 1})`,
+        section: name,
+        tracks: JSON.parse(JSON.stringify(section.tracks)),
+        savedAt: new Date().toLocaleTimeString(),
+      },
+    ]);
+    showStatus(`${name} added to arranger`);
+  };
+
+  const quickArrange = () => {
+    const sectionsToMake: SectionName[] = ['Intro', 'Verse', 'Chorus', 'Bridge'];
+    sectionsToMake.forEach((sectionName, index) => {
+      const newPattern = tracks.map((t) => ({ ...t, steps: t.steps.map((s, i) => ({ ...s, active: i % (4 - Math.min(3, index)) === 0 || Math.random() < 0.2, velocity: s.velocity || 0.65 })) }));
+      setSections((prev) => ({
+        ...prev,
+        [sectionName]: { name: sectionName, tracks: JSON.parse(JSON.stringify(newPattern)), savedAt: new Date().toLocaleTimeString() },
+      }));
+    });
+    setArranger((prev) => {
+      const next = [...prev];
+      ['Intro', 'Verse', 'Chorus', 'Bridge'].forEach((name, i) => {
+        next.push({ id: `${name}-${Date.now()}-${i}`, name: `${name} (${i + 1})`, section: name as SectionName, tracks: JSON.parse(JSON.stringify(tracks)), savedAt: new Date().toLocaleTimeString() });
+      });
+      return next;
+    });
+    showStatus('Quick arrange created for Intro/Verse/Chorus/Bridge');
+  };
+
+  const moveArrangerItem = (id: string, direction: 'up' | 'down') => {
+    setArranger((prev) => {
+      const index = prev.findIndex((item) => item.id === id);
+      if (index < 0) return prev;
+      const next = [...prev];
+      const swapIndex = direction === 'up' ? index - 1 : index + 1;
+      if (swapIndex < 0 || swapIndex >= next.length) return prev;
+      [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+      return next;
+    });
+  };
+
+  const removeArrangerItem = (id: string) => {
+    setArranger((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  useEffect(() => {
+    const saved = localStorage.getItem("grade1-sections");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved) as Record<SectionName, SectionSlot | null>;
+        setSections(parsed);
+      } catch {
+        // ignore parse errors
       }
-
-      // ✅ PIANO/SYNTH/STRINGS: jazz stabs overlay (sparse), preserve existing
-      if (t.type === "PIANO" || t.type === "SYNTH" || t.type === "STRINGS") {
-        const steps = t.steps.map((s, i) => {
-          const stab = i % 4 === 0 && Math.random() < 0.35; // sparse
-          const active = s.active || stab;
-          const velocity = active
-            ? Math.max((s as any).velocity ?? 0, stab ? 0.35 + Math.random() * 0.25 : 0)
-            : 0;
-
-          return { ...s, active, velocity };
-        });
-
-        return { ...t, steps };
+    }
+    const arrangerSaved = localStorage.getItem("grade1-arranger");
+    if (arrangerSaved) {
+      try {
+        const parsed = JSON.parse(arrangerSaved) as Array<{id: string; name: string; section: SectionName; tracks: Track[]; savedAt: string}>;
+        setArranger(parsed);
+      } catch {
+        // ignore parse errors
       }
+    }
+  }, []);
 
-      return t;
+  useEffect(() => {
+    localStorage.setItem("grade1-sections", JSON.stringify(sections));
+  }, [sections]);
+  useEffect(() => {
+    localStorage.setItem("grade1-arranger", JSON.stringify(arranger));
+  }, [arranger]);
+
+  const midiNoteForInstrument = (type: InstrumentType): number => {
+    switch (type) {
+      case InstrumentType.DRUMS:
+      case InstrumentType.EIGHT_OH_EIGHT:
+        return 36;
+      case InstrumentType.BASS:
+        return 40;
+      case InstrumentType.SYNTH:
+      case InstrumentType.PIANO:
+      case InstrumentType.STRINGS:
+        return 60;
+      case InstrumentType.GUITAR:
+        return 50;
+      case InstrumentType.VOCAL:
+        return 64;
+      default:
+        return 60;
+    }
+  };
+
+  const exportMidi = () => {
+    const ppq = 96;
+    const stepLength = ppq / 4;
+    const events: number[] = [];
+
+    const writeVarLen = (value: number): number[] => {
+      let buffer = value & 0x7f;
+      const bytes: number[] = [];
+      while (true) {
+        if (value > 0x7f) {
+          bytes.unshift((buffer & 0x7f) | 0x80);
+        } else {
+          bytes.unshift(buffer & 0x7f);
+          break;
+        }
+        value >>= 7;
+        buffer = value & 0x7f;
+      }
+      return bytes;
+    };
+
+    const append = (...vals: number[]) => events.push(...vals);
+
+    append(0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20);
+    append(0x00, 0xff, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08);
+
+    tracks.forEach((track) => {
+      if (track.muted) return;
+      const channel = midiChannelByInstrument[track.type] ?? 1;
+      const note = midiNoteForInstrument(track.type);
+      track.steps.forEach((step, idx) => {
+        if (!step.active) return;
+        const velocity = Math.max(1, Math.round((step.velocity ?? 0.7) * 100));
+        append(...writeVarLen(idx * stepLength), 0x90 | (channel - 1), note, velocity);
+        append(...writeVarLen(stepLength), 0x80 | (channel - 1), note, 0);
+      });
     });
 
-    onUpdateTracks(merged);
-  } finally {
-    setIsGenerating(false);
-  }
-};
+    append(0x00, 0xff, 0x2f, 0x00);
+
+    const trackLength = events.length;
+    const header = [
+      0x4d, 0x54, 0x68, 0x64,
+      0x00, 0x00, 0x00, 0x06,
+      0x00, 0x00,
+      0x00, 0x01,
+      0x00, ppq,
+    ];
+    const trackHeader = [
+      0x4d, 0x54, 0x72, 0x6b,
+      (trackLength >> 24) & 0xff,
+      (trackLength >> 16) & 0xff,
+      (trackLength >> 8) & 0xff,
+      trackLength & 0xff,
+      ...events,
+    ];
+
+    const bytes = new Uint8Array([...header, ...trackHeader]);
+    const blob = new Blob([bytes], { type: "audio/midi" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `grade1-session-${new Date().toISOString().replace(/[:.]/g, "-")}.mid`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ✅ Magic Beat: uses chosen genre variations when available, else livens patterns with phrase-level overrides
+  const handleMagicButton = async () => {
+    setIsGenerating(true);
+    try {
+      const variationLast = selectedVariations[selectedVariations.length - 1] ?? 1;
+      const selectedVariation = Math.max(1, variationLast);
+      const variationIdx = selectedGenre
+        ? Math.max(0, Math.min((selectedGenre.variations?.length ?? 1) - 1, selectedVariation - 1))
+        : 0;
+
+      const baseTracks = selectedGenre
+        ? applyGenre(tracks, selectedGenre, variationIdx)
+        : tracks;
+
+      const boom = makeBoomBap16({
+        swing: Math.max(0.2, Math.min(0.9, liveSwing)),
+        humanize: Math.max(0, Math.min(0.5, liveHumanize / 100)),
+        density: 0.6,
+        ghost: 0.45,
+      });
+
+      const craftMelody = (steps: typeof tracks[number]['steps']) => {
+        return steps.map((s, i) => {
+          const active = (i % 4 === 0 && Math.random() > 0.35) || (Math.random() < 0.12);
+          return {
+            ...s,
+            active,
+            velocity: active ? 0.45 + Math.random() * 0.45 : 0,
+          };
+        });
+      };
+
+      const generated = baseTracks.map((t) => {
+        if (t.type === InstrumentType.DRUMS) {
+          const steps = t.steps.map((s, i) => {
+            const drumHit = boom.kick[i].active || boom.snare[i].active || boom.hat[i].active;
+            const velocity = drumHit
+              ? 0.55 + Math.random() * 0.35
+              : s.active
+              ? Math.max(0.2, (s.velocity ?? 0.5) * 0.95)
+              : 0;
+            return {
+              ...s,
+              active: drumHit || s.active,
+              velocity,
+            };
+          });
+          return { ...t, steps };
+        }
+
+        if (t.type === InstrumentType.BASS || t.type === InstrumentType.EIGHT_OH_EIGHT) {
+          const steps = t.steps.map((s, i) => {
+            const strongPulse = i === 0 || i === 8 || i === 12;
+            const active = strongPulse || (i % 4 === 2 && Math.random() < 0.35);
+            return {
+              ...s,
+              active,
+              velocity: active ? 0.58 + Math.random() * 0.32 : 0,
+            };
+          });
+          return { ...t, steps };
+        }
+
+        if (
+          t.type === InstrumentType.PIANO ||
+          t.type === InstrumentType.SYNTH ||
+          t.type === InstrumentType.STRINGS ||
+          t.type === InstrumentType.GUITAR
+        ) {
+          const steps = t.steps.map((s, i) => {
+            const stab = i % 4 === 0 ? Math.random() > 0.35 : Math.random() > 0.85;
+            return {
+              ...s,
+              active: s.active || stab,
+              velocity: stab ? 0.4 + Math.random() * 0.45 : s.velocity,
+            };
+          });
+          return { ...t, steps };
+        }
+
+        if (t.type === InstrumentType.VOCAL) {
+          return { ...t, steps: craftMelody(t.steps) };
+        }
+
+        return t;
+      });
+
+      onUpdateTracks(generated);
+    } catch (error) {
+      console.error('Magic Beat failed', error);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
 
 
 
   return (
-    <div className="h-full flex flex-col bg-slate-50 font-grade1 text-slate-800 overflow-hidden relative selection:bg-indigo-200">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-center p-4 bg-gray-900 border-b border-gray-800 z-20 gap-4 shadow-xl text-white">
-        <div className="flex items-center gap-3">
-          <div className="p-3 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl text-white shadow-lg shadow-indigo-500/30">
-            <Layers size={24} />
+    <div className="h-full flex flex-col bg-[#0b0f1a] font-grade1 text-slate-200 overflow-hidden relative selection:bg-indigo-200">
+      {/* Sonic Studio Top Bar */}
+      <div className="flex flex-col gap-3 p-3 border-b border-slate-800 bg-[#0a0d15]/90 backdrop-blur-md z-30">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center shadow-lg shadow-indigo-700/40">
+              <Layers size={20} className="text-white" />
+            </div>
+            <div>
+              <div className="text-xs uppercase text-slate-400 tracking-[0.16em]">Sonic Studio</div>
+              <div className="text-base md:text-xl font-black tracking-wide text-white">Beat Mode</div>
+            </div>
           </div>
-          <div>
-            <h1 className="text-xl font-black text-white tracking-tight drop-shadow-sm">
-              Beat Playground
-            </h1>
-            <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">
-              Grade 1 Studio
-            </p>
+
+          <div className="flex items-center gap-2 text-[11px] rounded-full bg-slate-800/60 px-3 py-2 border border-slate-700">
+            <button onClick={onTogglePlay} className="px-2 py-1 rounded-md bg-gradient-to-r from-green-500 to-emerald-500 font-bold text-xs shadow-sm">
+              {isPlaying ? 'STOP' : 'PLAY'}
+            </button>
+            <div className="font-bold">{bpm} BPM</div>
+            <div className="font-semibold text-slate-200">C Major</div>
+            <div className="text-indigo-300">●</div>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-center gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs text-slate-300">
+            <button className="rounded-full px-3 py-1 bg-slate-700/70 hover:bg-slate-600 transition">Beat</button>
+            <button className="rounded-full px-3 py-1 bg-slate-700/40 hover:bg-slate-600 transition">Clip</button>
+            <button className="rounded-full px-3 py-1 bg-slate-700/40 hover:bg-slate-600 transition">Arrange</button>
+            <button className="rounded-full px-3 py-1 bg-slate-700/40 hover:bg-slate-600 transition">Perform</button>
+          </div>
+          <div className="flex items-center gap-2 w-full md:w-[480px] md:max-w-[48rem]">
+            <input
+              type="text"
+              placeholder="Ask Sonic AI..."
+              className="w-full rounded-xl border border-slate-600 bg-[#0f1323] px-3 py-2 text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20"
+            />
+            <button className="px-3 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 text-white text-xs font-bold">Generate</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 flex overflow-hidden">
+        <aside className="w-[220px] bg-[#10152a] border-r border-slate-800 p-3 flex flex-col gap-3">
+          <div className="text-[11px] uppercase font-bold tracking-[0.18em] text-slate-400">Browser</div>
+          <button className="text-left rounded-xl bg-slate-800/50 px-3 py-2 text-xs hover:bg-slate-700 transition">Instruments</button>
+          <button className="text-left rounded-xl bg-slate-800/50 px-3 py-2 text-xs hover:bg-slate-700 transition">Drum Kits</button>
+          <button className="text-left rounded-xl bg-slate-800/50 px-3 py-2 text-xs hover:bg-slate-700 transition">MIDI Packs</button>
+          <button className="text-left rounded-xl bg-slate-800/50 px-3 py-2 text-xs hover:bg-slate-700 transition">Samples</button>
+          <button className="text-left rounded-xl bg-slate-800/50 px-3 py-2 text-xs hover:bg-slate-700 transition">Favorites</button>
+          <div className="mt-auto text-[11px] text-slate-400">Live: {isPlaying ? 'ON' : 'OFF'}</div>
+        </aside>
+
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 overflow-y-auto bg-[#0c111f] p-3">
+            <div className="grid grid-cols-1 gap-3">
+              <div className="flex items-center justify-between gap-2 bg-[#161b32] rounded-2xl border border-slate-700 p-3">
+                <div className="text-xs uppercase tracking-[0.16em] text-slate-400">Live Beat Workspace</div>
+                <div className="text-xs text-emerald-400">Realtime | 16-step sequencer</div>
+              </div>
+
+              <div className="space-y-3">
+                {tracks.map((track) => (
+                  <div key={track.id} className="rounded-2xl bg-[#111a2e] border border-slate-700 p-2">
+                    <div className="flex items-center justify-between gap-2 pb-2">
+                      <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+                        <span className="text-lg">{track.type === 'DRUMS' ? '🥁' : track.type === 'BASS' ? '🎸' : track.type === 'SYNTH' ? '🎹' : '🎤'}</span>
+                        {track.name}
+                      </div>
+                      <div className="flex items-center gap-1 text-[11px]">
+                        <button className="rounded px-2 py-1 bg-slate-700 text-slate-200">M</button>
+                        <button className="rounded px-2 py-1 bg-slate-700 text-slate-200">S</button>
+                        <button className="rounded px-2 py-1 bg-lime-500 text-black">On</button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-16 gap-1">
+                      {track.steps.map((step, i) => (
+                        <button
+                          key={i}
+                          onClick={() => onUpdateStep(track.id, i)}
+                          className={`h-8 rounded-md transition ${step.active ? 'bg-gradient-to-br from-cyan-400 to-indigo-500 shadow-lg shadow-indigo-500/40' : 'bg-slate-700 hover:bg-slate-600'}`}
+                        >
+                          <span className="text-[10px]">{i + 1}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-800 bg-[#0e1325] p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs uppercase tracking-[0.14em] text-slate-300 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> Mixer Preview</div>
+              <div className="flex items-center gap-2 text-[11px] text-slate-300">
+                <span>Master</span>
+                <span className="rounded-full bg-indigo-600 px-2 py-0.5">-12 dB</span>
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-4 gap-2">
+              {tracks.slice(0, 4).map((track) => (
+                <div key={track.id} className="bg-[#1a203d] rounded-xl p-2 text-[11px] border border-slate-700">
+                  <div className="font-bold text-slate-200">{track.name}</div>
+                  <div className="h-2 mt-2 w-full rounded-full bg-slate-600"><div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-blue-400" style={{ width: `${Math.round(track.volume * 100)}%` }} /></div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <aside className="w-[260px] bg-[#111b35] border-l border-slate-800 p-3">
+          <div className="text-[11px] uppercase tracking-[0.14em] text-slate-400 mb-2">AI Co-Producer</div>
+          <div className="space-y-2 bg-[#0b1327] border border-slate-700 rounded-2xl p-3">
+            <div className="text-[11px] text-emerald-300">Sonic AI</div>
+            <div className="text-xs text-slate-200 font-semibold">Generate Afrobeat drums</div>
+            <div className="text-xs text-slate-200 font-semibold">Humanize groove</div>
+            <div className="text-xs text-slate-200 font-semibold">Add gospel chords</div>
+            <button className="mt-2 w-full rounded-xl bg-indigo-600 text-white text-xs py-2">Ask AI</button>
+          </div>
+        </aside>
+      </div>
+      
+      <div className="absolute bottom-3 right-3 text-[10px] text-slate-400">Sonic Studio · Beat Mode · v1</div>
+      
+      {/* Main controls continue after this section in existing UI. */}
+      <div className="hidden">
+
           <button
             onClick={onSaveProject}
             className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-gray-800 border border-gray-700 text-gray-200 hover:bg-gray-700 transition-all"
@@ -324,6 +721,14 @@ React.useEffect(() => {
           >
             <Save size={16} className="text-indigo-400" />
             <span className="hidden sm:inline">Save</span>
+          </button>
+
+          <button
+            onClick={exportMidi}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold bg-slate-700 border border-slate-600 text-white hover:bg-slate-600 transition-all"
+            title="Export current arrangement as MIDI"
+          >
+            <span>Export MIDI</span>
           </button>
 
           <button
@@ -337,6 +742,28 @@ React.useEffect(() => {
           >
             <Wand2 size={16} className={isGenerating ? "animate-spin" : ""} />
             {isGenerating ? "Dreaming..." : "Magic Beat"}
+          </button>
+
+          <button
+            onClick={fillCurrentPattern}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-800 text-white hover:bg-slate-700 transition-all"
+            title="Quick fill pattern"
+          >
+            <Sparkles size={14} /> Fill Pattern
+          </button>
+
+          <button
+            onClick={() => {
+              setQuickLoop((v) => !v);
+              applyGroove();
+            }}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all ${
+              quickLoop
+                ? "bg-lime-600 text-white hover:bg-lime-500"
+                : "bg-slate-700 text-white hover:bg-slate-600"
+            }`}
+          >
+            <Shuffle size={14} /> {quickLoop ? "Live Groove ON" : "Live Groove OFF"}
           </button>
 
           <button
@@ -358,7 +785,57 @@ React.useEffect(() => {
             {isPlaying ? <Square size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
             {isPlaying ? "STOP" : "PLAY"}
           </button>
+      </div>
+
+      {/* Session Control Bar */}
+      <div className="flex flex-wrap items-center gap-3 p-3 bg-slate-900 text-white border-b border-slate-800 z-10">
+        <div className="flex items-center gap-2 rounded-xl bg-slate-800/60 px-3 py-2 text-xs font-bold">
+          <Database size={14} /> Session: Grade1 Beat Lab
         </div>
+        {statusMessage && (
+          <div className="ml-auto rounded-full border border-indigo-400 bg-indigo-600/85 px-3 py-1 text-[11px] font-semibold text-white">
+            {statusMessage}
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-xs">
+          <div className="px-2 py-1 rounded-md bg-indigo-500/20 text-indigo-200">Swing: {(liveSwing * 100).toFixed(0)}%</div>
+          <div className="px-2 py-1 rounded-md bg-indigo-500/20 text-indigo-200">Humanize: {liveHumanize}ms</div>
+        </div>
+        <div className="w-full md:w-auto">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <span>Groove Control:</span>
+            <input className="w-24 accent-indigo-400" type="range" min="0" max="1" step="0.05" value={liveSwing} onChange={(e) => setLiveSwing(Number(e.target.value))} />
+            <span>{(liveSwing * 100).toFixed(0)}%</span>
+          </div>
+        </div>
+        <div className="w-full md:w-auto">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <span>Tempo:</span>
+            <input className="w-32 accent-indigo-400" type="range" min="60" max="220" step="1" value={bpm} onChange={(e) => onSetBpm(Number(e.target.value))} />
+            <span className="font-black">{bpm} BPM</span>
+          </div>
+        </div>
+        <div className="w-full md:w-auto">
+          <div className="flex items-center gap-2 text-xs font-semibold text-slate-200">
+            <span>Humanize:</span>
+            <input className="w-28 accent-indigo-400" type="range" min="0" max="40" step="1" value={liveHumanize} onChange={(e) => setLiveHumanize(Number(e.target.value))} />
+            <span>{liveHumanize}ms</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <label className="font-bold">Section:</label>
+          <select value={selectedSection} onChange={(e) => setSelectedSection(e.target.value as SectionName)} className="rounded-lg px-2 py-1 bg-slate-800 text-white text-xs">
+            {SECTION_NAMES.map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+          </select>
+        </div>
+        <button onClick={() => saveSectionPattern(selectedSection)} className="px-2 py-1.5 bg-indigo-500 hover:bg-indigo-400 rounded-xl text-xs font-bold">Save Section</button>
+        <button onClick={() => loadSectionPattern(selectedSection)} className="px-2 py-1.5 bg-emerald-500 hover:bg-emerald-400 rounded-xl text-xs font-bold">Load Section</button>
+        <button onClick={() => clearSectionPattern(selectedSection)} className="px-2 py-1.5 bg-rose-500 hover:bg-rose-400 rounded-xl text-xs font-bold">Clear Section</button>
+        <button onClick={() => quickArrange()} className="px-2 py-1.5 bg-purple-500 hover:bg-purple-400 rounded-xl text-xs font-bold">Quick Arrange</button>
+        <button onClick={applyGroove} className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 rounded-xl text-xs font-bold">Apply Groove</button>
+        <button onClick={() => setShowPatternLibrary((v) => !v)} className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-400 rounded-xl text-xs font-bold">Pattern Library</button>
       </div>
 
       {/* Main Scroll */}
@@ -412,13 +889,18 @@ React.useEffect(() => {
                     </div>
 
                     <div className="flex flex-col">
-                      <span
-                        className={`text-2xl font-black tracking-tight transition-colors ${
-                          isEnabled ? "text-slate-800" : "text-slate-400"
-                        }`}
-                      >
-                        {track.name}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-2xl font-black tracking-tight transition-colors ${
+                            isEnabled ? "text-slate-800" : "text-slate-400"
+                          }`}
+                        >
+                          {track.name}
+                        </span>
+                        <span className="text-[10px] font-bold uppercase px-2 py-1 rounded-full bg-slate-100 text-slate-600">
+                          Ch {midiChannelByInstrument[track.type] ?? 1}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-2 mt-1">
                         <span
                           className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
@@ -468,8 +950,69 @@ React.useEffect(() => {
                   </div>
                 </div>
 
-                {/* Sequencer Grid */}
-                <div className={`transition-all duration-500 ease-in-out overflow-hidden ${isExpanded ? "max-h-[500px] opacity-100" : "max-h-0 opacity-0"}`}>
+                
+                {/* Vocal Keyboard */}
+                {track.type === "VOCAL" && onPlayNote && (
+                  <div className={`px-4 pb-4 ${!isEnabled ? "opacity-40 grayscale pointer-events-none" : ""}`}>
+                    <div
+                      className="mt-3 p-4 rounded-2xl bg-indigo-50 border border-indigo-200"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        <div className="text-xs font-black text-indigo-700">
+                          VOCAL KEYBOARD (Target Notes)
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setVocalBaseMidi((m) => Math.max(24, m - 12))}
+                            className="px-3 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-700 text-[11px] font-black hover:bg-indigo-100"
+                            title="Octave down"
+                          >
+                            − Oct
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVocalBaseMidi((m) => Math.min(84, m + 12))}
+                            className="px-3 py-1 rounded-lg bg-white border border-indigo-200 text-indigo-700 text-[11px] font-black hover:bg-indigo-100"
+                            title="Octave up"
+                          >
+                            + Oct
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-1 overflow-x-auto no-scrollbar pb-1">
+                        {Array.from({ length: VOCAL_KEYBOARD_KEYS * 2 }).map((_, i) => {
+                          const midi = vocalBaseMidi + i; // 2 octaves
+                          const isBlack = [1, 3, 6, 8, 10].includes(midi % 12);
+                          const label = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][midi % 12];
+
+                          return (
+                            <button
+                              key={midi}
+                              type="button"
+                              onClick={() => onPlayNote(midi)}
+                              className={`h-20 w-9 rounded-xl font-black text-[10px] transition-all active:scale-95
+                                ${isBlack ? "bg-slate-900 text-white" : "bg-white text-slate-900 border border-slate-200"}
+                                hover:-translate-y-0.5 hover:shadow-md`}
+                              title={`MIDI ${midi}`}
+                            >
+                              {label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="mt-2 text-[10px] text-indigo-600/80 font-bold">
+                        Tip: Use Oct buttons for full range. Next step: snap mic pitch to these notes (autotune).
+                      </div>
+                    </div>
+                  </div>
+                )}
+{/* Sequencer Grid */}
+                <div className={`transition-all duration-500 ease-in-out overflow-hidden ${isExpanded ? "max-h-[900px] opacity-100" : "max-h-0 opacity-0"}`}>
                   <div className={`p-4 md:p-6 bg-slate-50/50 border-t border-slate-100 rounded-b-[2rem] ${!isEnabled ? "opacity-40 grayscale pointer-events-none" : ""}`}>
                     <div className="grid grid-cols-8 md:grid-cols-16 gap-2 md:gap-3">
                       {track.steps.map((step, idx) => (
@@ -490,6 +1033,11 @@ React.useEffect(() => {
                         </button>
                       ))}
                     </div>
+                    
+
+
+
+
                   </div>
                 </div>
               </div>
@@ -530,6 +1078,74 @@ React.useEffect(() => {
           </div>
         </div>
 
+        {showPatternLibrary && (
+          <div className="bg-slate-900/95 p-4 rounded-2xl text-white border border-slate-700 shadow-xl">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="text-xs uppercase tracking-[0.16em] text-indigo-300 font-black">Pattern Library</div>
+                <div className="text-sm font-bold">Fast templates for instant jams</div>
+              </div>
+              <button onClick={() => setShowPatternLibrary(false)} className="text-slate-300 hover:text-white text-xs font-bold">Close</button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              {[
+                { title: "Boom Bap", desc: "Punchy drums + tight hat grooves", action: () => handleMagicButton() },
+                { title: "Ambient Chord", desc: "Soft pad progression + arpeggio", action: () => applySelectedGenre() },
+                { title: "Amapiano Pulse", desc: "Swingy keys and 808 bounce", action: () => fillCurrentPattern() },
+              ].map((p) => (
+                <button key={p.title} onClick={p.action} className="bg-slate-800/80 border border-slate-600 rounded-xl p-3 text-left hover:border-indigo-400 hover:bg-indigo-700/40 transition-all">
+                  <div className="text-xs uppercase text-indigo-300 font-black">Template</div>
+                  <div className="text-sm font-bold mt-1">{p.title}</div>
+                  <div className="text-slate-300 mt-1">{p.desc}</div>
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 border-t border-slate-700 pt-3">
+              <div className="text-xs uppercase tracking-[0.16em] text-indigo-300 font-black mb-2">Arranger Sections</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+                {SECTION_NAMES.map((name) => {
+                  const section = sections[name];
+                  return (
+                    <div key={name} className="rounded-xl border border-slate-600 p-2 bg-slate-800/60">
+                      <div className="font-bold text-slate-100">{name}</div>
+                      <div className="text-slate-300 mt-1 text-[10px]">
+                        {section ? `Saved ${section.savedAt}` : "Empty"}
+                      </div>
+                      <div className="mt-2 flex gap-1">
+                        <button onClick={() => saveSectionPattern(name as SectionName)} className="flex-1 bg-indigo-500 hover:bg-indigo-400 rounded-md py-1 text-[10px]">Save</button>
+                        <button onClick={() => loadSectionPattern(name as SectionName)} className="flex-1 bg-emerald-500 hover:bg-emerald-400 rounded-md py-1 text-[10px]">Load</button>
+                      </div>
+                      <button onClick={() => addSectionToArranger(name as SectionName)} className="mt-1 w-full text-[10px] font-bold bg-blue-600 hover:bg-blue-500 rounded-md py-1">Add to Arranger</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-700 bg-slate-800 p-3">
+              <div className="flex items-center justify-between text-xs font-black uppercase tracking-[0.14em] text-indigo-200 mb-2">Arrangement Timeline</div>
+              {arranger.length === 0 ? (
+                <div className="text-[11px] text-slate-300">Save a section and add to arranger to build your song structure.</div>
+              ) : (
+                <div className="space-y-2 text-[11px]">
+                  {arranger.map((item, index) => (
+                    <div key={item.id} className="rounded-xl border border-slate-600 bg-slate-900/70 p-2 flex items-center justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-slate-100">{index + 1}. {item.name}</div>
+                        <div className="text-slate-300">{item.section} • {item.savedAt}</div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => moveArrangerItem(item.id, 'up')} className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-[11px]">↑</button>
+                        <button onClick={() => moveArrangerItem(item.id, 'down')} className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-[11px]">↓</button>
+                        <button onClick={() => removeArrangerItem(item.id)} className="px-2 py-1 rounded bg-rose-600 hover:bg-rose-500 text-[11px]">X</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Known Instrumentals (Genres) */}
         <div className="p-6 bg-white border-t border-slate-200 shadow-[0_-10px_40px_rgba(0,0,0,0.05)] z-10 relative">
           <h3 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2">
@@ -545,6 +1161,7 @@ React.useEffect(() => {
                   onClick={() => {
                     setSelectedGenre(g);
                     setSelectedVariations([]);
+                    (window as unknown as Record<string, string>).__ACTIVE_GENRE_ID__ = g.id;
                   }}
                   className="group relative h-24 rounded-2xl bg-slate-50 hover:bg-white border-2 border-transparent hover:border-indigo-500 shadow-sm hover:shadow-xl transition-all cursor-pointer overflow-hidden flex flex-col items-center justify-center gap-2"
                 >

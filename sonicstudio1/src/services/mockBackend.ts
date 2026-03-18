@@ -7,7 +7,7 @@ import type { User } from '../types';
 const MOCK_DELAY = 800;
 
 export const mockBackend = {
-  login: async (email: string, password: string): Promise<User> => {
+  login: async (email: string, _password: string): Promise<User> => {
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         if (email.includes("@")) {
@@ -26,7 +26,7 @@ export const mockBackend = {
     });
   },
 
-  signup: async (email: string, password: string): Promise<User> => {
+  signup: async (email: string, _password: string): Promise<User> => {
     return new Promise((resolve) => {
       setTimeout(() => {
         resolve({

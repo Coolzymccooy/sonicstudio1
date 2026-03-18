@@ -1,22 +1,22 @@
 import React, { useState } from 'react';
-import type { SampleClip, AudioRecording, Track } from '../types';
-import { Sliders, Activity, Mic2, Cpu, Volume2, Play, Circle, Power } from 'lucide-react';
+import type { Track } from '../types';
+import { Sliders, Activity, Cpu, Play, Power } from 'lucide-react';
 import { Visualizer } from './Visualizer';
 
 interface ProModeProps {
+  bpm: number;
+  onSetBpm: (newBpm: number) => void;
   tracks: Track[];
   isPlaying: boolean;
-  currentStep: number;
-  onUpdateStep: (trackId: string, stepIndex: number) => void;
   onUpdateVol: (trackId: string, vol: number) => void;
   onUpdateTracks: (tracks: Track[]) => void;
 }
 
 export const ProMode: React.FC<ProModeProps> = ({
+  bpm,
+  onSetBpm,
   tracks,
   isPlaying,
-  currentStep,
-  onUpdateStep,
   onUpdateVol,
   onUpdateTracks
 }) => {
@@ -40,8 +40,8 @@ export const ProMode: React.FC<ProModeProps> = ({
     <div className="h-full flex flex-col bg-[#121214] text-gray-300 font-sans select-none">
       
       {/* Pro Toolbar / Status Bar */}
-      <div className="h-10 border-b border-gray-800 bg-[#0a0a0a] flex items-center justify-between px-4 shadow-md z-10">
-        <div className="flex items-center gap-6 text-[11px] font-mono tracking-wide">
+      <div className="h-12 border-b border-gray-800 bg-[#0a0a0a] flex items-center justify-between px-4 shadow-md z-10">
+        <div className="flex items-center gap-3 text-[11px] font-mono tracking-wide">
           <div className="flex items-center gap-2 text-emerald-500">
             <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span>AI ENGINE: ONLINE</span>
@@ -54,12 +54,23 @@ export const ProMode: React.FC<ProModeProps> = ({
             <Cpu size={12} />
             <span>CPU: 12%</span>
           </div>
+          <div className="flex items-center gap-2 bg-slate-800 rounded-full px-2 py-1 text-[10px]">
+            <span className="font-bold text-sky-300">BPM</span>
+            <input
+              type="range"
+              min="60"
+              max="220"
+              step="1"
+              value={bpm}
+              onChange={(e) => onSetBpm(Number(e.target.value))}
+              className="w-24 accent-cyan-400"
+            />
+            <span className="font-bold text-white">{bpm}</span>
+          </div>
         </div>
-        <div className="text-[10px] font-bold text-gray-600 tracking-widest uppercase">
-          Session View
-        </div>
+        <div className="text-[10px] font-bold uppercase tracking-widest text-gray-300">Pro DAW Console</div>
       </div>
-
+      
       <div className="flex-1 flex overflow-x-auto overflow-y-hidden p-4 gap-3 bg-[#18181b]">
         
         {/* Track Channels */}

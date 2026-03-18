@@ -2,15 +2,8 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Camera,
   Mic,
-  Radio,
-  Settings,
   Maximize,
-  Monitor,
-  Wifi,
-  Youtube,
-  Globe,
   Activity,
-  Eye,
   Cast,
   WifiOff,
   RefreshCcw,
@@ -101,7 +94,7 @@ export const BroadcastMode: React.FC<BroadcastModeProps> = ({
         stream.getTracks().forEach((t) => t.stop());
         videoRef.current.srcObject = null;
       }
-    } catch {}
+    } catch { /* ignored */ }
   };
 
   const stopVisualizer = () => {
@@ -117,7 +110,7 @@ export const BroadcastMode: React.FC<BroadcastModeProps> = ({
         visAnalyserRef.current.disconnect();
         visAnalyserRef.current = null;
       }
-    } catch {}
+    } catch { /* ignored */ }
   };
 
   const startVisualizer = (stream: MediaStream) => {
@@ -146,7 +139,7 @@ export const BroadcastMode: React.FC<BroadcastModeProps> = ({
           // keep your original "every 10th bin" approach
           for (let i = 0; i < dataArray.length; i += 10) sum += dataArray[i];
           setAudioLevel(sum / (dataArray.length / 10));
-        } catch {}
+        } catch { /* ignored */ }
 
         visRafRef.current = requestAnimationFrame(updateLevel);
       };
@@ -561,7 +554,7 @@ export const BroadcastMode: React.FC<BroadcastModeProps> = ({
               {['NONE', 'CINEMATIC', 'STUDIO', 'NOIR'].map((filter) => (
                 <button
                   key={filter}
-                  onClick={() => setVideoFilter(filter as any)}
+                  onClick={() => setVideoFilter(filter as typeof videoFilter)}
                   className={`py-3 rounded-lg text-xs font-bold border transition-all ${
                     videoFilter === filter
                       ? 'bg-yellow-600 border-yellow-500 text-black'

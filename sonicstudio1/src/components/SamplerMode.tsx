@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Play, Square, Scissors, Repeat, Layers, Music, Share2, Download, CheckCircle, AlertTriangle, Plus, Disc, Volume2, Mic } from 'lucide-react';
+import { Upload, Play, Square, Scissors, Repeat, Layers, Music, Share2, Download, CheckCircle, Plus, Disc, Volume2, Mic } from 'lucide-react';
 import type { SampleClip, AudioRecording, Track } from '../types';
 import { decodeAudioData, playBufferRaw } from '../services/audioEngine';
 
@@ -95,7 +95,7 @@ export const SamplerMode: React.FC<SamplerModeProps> = ({ recordings, tracks = [
 
   const addSampleFromBuffer = (audioBuffer: AudioBuffer, name: string, idPrefix: string) => {
       const newSample: SampleClip = {
-          id: `${idPrefix}-${Date.now()}`,
+          id: `${idPrefix}-${crypto.randomUUID()}`,
           name: name,
           buffer: audioBuffer,
           startTime: 0,

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-import { Settings, Mic, Headphones, Cast, X, Volume2, Activity, Play, AlertTriangle, Zap, Radio, RefreshCw, Bluetooth, Info, Camera, Video, MonitorPlay, Loader2, ArrowRight, Cable } from 'lucide-react';
+import { Settings, Mic, X, Volume2, Activity, Play, RefreshCw, Bluetooth, Info, Camera, Loader2, Cable } from 'lucide-react';
 
-import type { AudioDeviceSettings, User as UserType } from '../types.ts';
+import type { AudioDeviceSettings } from '../types';
 
 import { playTestTone, getAudioState, getVocalAnalysis, setVocalEnhance } from '../services/audioEngine';
 
@@ -20,7 +20,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onUpdateSettings 
 }) => {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
-  const [audioState, setAudioState] = useState<string>('unknown');
+  const [, setAudioState] = useState<string>('unknown');
   const [testToneStatus, setTestToneStatus] = useState('');
   const [isScanningDevices, setIsScanningDevices] = useState(false);
   const [showRoutingGuide, setShowRoutingGuide] = useState(false);
@@ -74,7 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
        // Re-enumerate
        const devs = await navigator.mediaDevices.enumerateDevices();
        setDevices(devs);
-     } catch (e) {
+     } catch {
        alert("Could not access devices. Please ensure you allow Camera access when prompted. This is required for Camo to appear.");
      } finally {
         setTimeout(() => setIsScanningDevices(false), 500);

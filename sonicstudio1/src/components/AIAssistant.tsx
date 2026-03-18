@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { MessageSquare, Send, X, Sparkles, Loader2, Bot } from 'lucide-react';
+import { Send, X, Loader2, Bot } from 'lucide-react';
 import type { ChatMessage } from '../types';
 import { analyzeIntent } from '../services/geminiService';
 
 interface AIAssistantProps {
-  onAction: (action: string, params: any) => void;
+  onAction: (action: string, params: Record<string, string>) => void;
 }
 
 export const AIAssistant: React.FC<AIAssistantProps> = ({ onAction }) => {

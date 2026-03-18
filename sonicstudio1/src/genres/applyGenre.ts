@@ -10,10 +10,6 @@ function chance(p: number) {
   return Math.random() < clamp01(p);
 }
 
-function make16Steps() {
-  return new Array(16).fill(0).map(() => ({ active: false, velocity: 0 }));
-}
-
 function applyToDrums(v: number[], density: number, syncopation: number) {
   // Start from a simple backbone then sprinkle syncopation
   // v is length 16 with values 0..1

@@ -19,7 +19,7 @@ const INITIAL_LIBRARY: Song[] = [
   { id: 'dj5', title: 'Vinyl Dust', artist: 'Retro King', bpm: 95, key: 'Em', coverColor: 'yellow', duration: '2:50' },
 ];
 
-export const DJMode: React.FC<DJModeProps> = ({ isPlaying, onTogglePlay, onSave }) => {
+export const DJMode: React.FC<DJModeProps> = ({ onSave }) => {
   const [crossfader, setCrossfader] = useState(50);
   const [deckAPlaying, setDeckAPlaying] = useState(false);
   const [deckBPlaying, setDeckBPlaying] = useState(false);

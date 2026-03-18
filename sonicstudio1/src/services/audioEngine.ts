@@ -1,3 +1,8 @@
+
+
+
+
+
 // src/service/audioEngine.ts
 import { InstrumentType } from "../types";
 
@@ -105,13 +110,13 @@ let microphoneStreamSource: MediaStreamAudioSourceNode | null = null;
 let vocalGateNode: GainNode | null = null;
 let vocalAnalyser: AnalyserNode | null = null;
 let vocalChainInput: GainNode | null = null;
-let vocalChainOutput: GainNode | null = null;
+const _vocalChainOutput: GainNode | null = null;
 let vocalBypassNode: GainNode | null = null;
 let vocalProcessChain: GainNode | null = null;
 
 // Analysis State for UI
 let currentVocalLevel = -100;
-let currentNoiseFloor = -60;
+const _currentNoiseFloor = -60;
 let isGateOpen = false;
 let adaptiveGateThreshold = -40;
 
@@ -119,12 +124,18 @@ let adaptiveGateThreshold = -40;
 // Helpers
 // -----------------------------
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
+// Aliases used by the Genre Layer Stack (keep names stable)
+const clamp01local = clamp01;
+const randLocal = (min: number, max: number) => min + Math.random() * (max - min);
+const chanceLocal = (p: number) => Math.random() < clamp01(p);
 
-const safeDisconnect = (node: AudioNode | null) => {
+
+
+const _safeDisconnect = (node: AudioNode | null) => {
   if (!node) return;
   try {
     node.disconnect();
-  } catch {}
+  } catch { /* ignored */ }
 };
 
 // Soft saturation curve for “sub enhancer”
@@ -146,7 +157,7 @@ const makeSubEnhancerCurve = (amount: number) => {
 export const getAudioContext = () => {
   if (!audioCtx) {
     const AudioContextClass =
-      window.AudioContext || (window as any).webkitAudioContext;
+      window.AudioContext || (window as unknown as Record<string, typeof AudioContext>).webkitAudioContext;
 
     audioCtx = new AudioContextClass({
       latencyHint: "interactive",
@@ -257,6 +268,31 @@ export const setMasterPan = (pan: number) => {
   );
 };
 
+const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
+
+export const setMasterBassBoostDb = (db: number) => {
+  getAudioContext();
+  if (!masterBassShelf) return;
+  // safe: 0..9 dB
+  masterBassShelf.gain.value = clamp(db, 0, 9);
+};
+
+export const setSubEnhancerAmount = (amount: number) => {
+  getAudioContext();
+  if (!masterSubEnhancer) return;
+  // 0..0.35 is safe; more can fuzz/blur
+  const a = clamp(amount, 0, 0.35);
+  masterSubEnhancer.curve = makeSubEnhancerCurve(a);
+};
+
+// Keeps boom big but limiter-safe
+export const setMasterOutputTrim = (gain: number) => {
+  getAudioContext();
+  if (!masterGain) return;
+  masterGain.gain.value = clamp(gain, 0.6, 1.0);
+};
+
+
 // -----------------------------
 // System utilities
 // -----------------------------
@@ -273,7 +309,7 @@ export const suspendAudio = async () => {
       try {
         node.stop();
         node.disconnect();
-      } catch {}
+      } catch { /* ignored */ }
     });
     activeSourceNodes.clear();
   }
@@ -378,7 +414,7 @@ export const playBufferRaw = (
       try {
         source.disconnect();
         gain.disconnect();
-      } catch {}
+      } catch { /* ignored */ }
     }, 100);
   };
 
@@ -440,7 +476,7 @@ export const stopDeck = (deckId: "A" | "B") => {
     if (deck.source) {
       try {
         deck.source.stop();
-      } catch {}
+      } catch { /* ignored */ }
       deck.source = null;
     }
     deck.isPlaying = false;
@@ -455,7 +491,7 @@ export const setDeckVolume = (deckId: "A" | "B", volume: number) => {
   }
 };
 
-const playSynthLoop = (deckId: "A" | "B", bpm: number, volume: number) => {
+const playSynthLoop = (deckId: "A" | "B", bpm: number, _volume: number) => {
   const ctx = getAudioContext();
   const deck = deckNodes[deckId];
   deck.isPlaying = true;
@@ -500,7 +536,7 @@ export const setupLiveVocalChain = async (
   if (microphoneStreamSource) {
     try {
       microphoneStreamSource.disconnect();
-    } catch {}
+    } catch { /* ignored */ }
   }
 
   adaptiveGateThreshold = thresholdDB;
@@ -636,54 +672,78 @@ export const playSound = (
   volume: number,
   pan: number,
   customBuffer?: AudioBuffer | null,
-  when?: number // NEW (optional): schedule time
+  when?: number
 ) => {
   const ctx = getAudioContext();
-  if (ctx.state === "suspended") ctx.resume();
+  if (ctx.state === "suspended") void ctx.resume();
 
   const t = (when ?? ctx.currentTime) + 0.01;
 
-  const trackGain = ctx.createGain();
-  trackGain.gain.setValueAtTime(volume, t);
+  // This is the ONE input node every source must connect into
+  const input = ctx.createGain();
+  input.gain.setValueAtTime(volume, t);
 
-  const panner = ctx.createStereoPanner();
-  panner.pan.setValueAtTime(pan, t);
+  const pannerNode = ctx.createStereoPanner();
+  pannerNode.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), t);
 
-  trackGain.connect(panner);
-  panner.connect(masterPreGain!);
+  // Route: input -> panner -> (optional filters) -> masterPreGain
+  input.connect(pannerNode);
 
+  const isMusic =
+    type !== InstrumentType.DRUMS &&
+    type !== InstrumentType.BASS &&
+    type !== InstrumentType.EIGHT_OH_EIGHT;
+
+  if (isMusic) {
+    const hp = ctx.createBiquadFilter();
+    hp.type = "highpass";
+    hp.frequency.setValueAtTime(130, t); // remove low mud
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(12000, t); // tame harsh fizz
+
+    pannerNode.connect(hp);
+    hp.connect(lp);
+    lp.connect(masterPreGain!);
+  } else {
+    pannerNode.connect(masterPreGain!);
+  }
+
+  // --- PLAY SOURCE INTO `input` (not into trackGain/panner) ---
   if (customBuffer) {
-    playSample(ctx, customBuffer, trackGain, t);
+    playSample(ctx, customBuffer, input, t);
     return;
   }
 
   switch (type) {
     case InstrumentType.DRUMS:
-      playProKick(ctx, trackGain, t);
+      playProKick(ctx, input, t);
       break;
     case InstrumentType.BASS:
-      playProBass(ctx, trackGain, t);
+      playProBass(ctx, input, t);
       break;
     case InstrumentType.SYNTH:
-      playProSynth(ctx, trackGain, t);
+      playProSynth(ctx, input, t);
       break;
     case InstrumentType.VOCAL:
-      playVocalSynth(ctx, trackGain, t);
+      playVocalSynth(ctx, input, t);
       break;
     case InstrumentType.PIANO:
-      playPiano(ctx, trackGain, t);
+      playPiano(ctx, input, t);
       break;
     case InstrumentType.GUITAR:
-      playGuitar(ctx, trackGain, t);
+      playGuitar(ctx, input, t);
       break;
     case InstrumentType.STRINGS:
-      playStrings(ctx, trackGain, t);
+      playStrings(ctx, input, t);
       break;
     case InstrumentType.EIGHT_OH_EIGHT:
-      play808(ctx, trackGain, t);
+      play808(ctx, input, t);
       break;
   }
 };
+
 
 const playSample = (
   ctx: AudioContext,
@@ -700,6 +760,8 @@ const playSample = (
 
   source.start(t);
 };
+
+
 
 // -----------------------------
 // NEW: Sample “instrument layer” registry (optional)
@@ -725,8 +787,10 @@ export const playJazzLayer = (
 ) => {
   const buf = jazzLayers[key];
   if (!buf) return;
-  playSound(InstrumentType.SYNTH, 0, 0, null); // no-op safety (keeps engine warm)
+
   const ctx = getAudioContext();
+  if (ctx.state === "suspended") void ctx.resume();
+
   const t = (when ?? ctx.currentTime) + 0.01;
 
   const g = ctx.createGain();
@@ -740,6 +804,347 @@ export const playJazzLayer = (
 
   playSample(ctx, buf, g, t);
 };
+
+export const playJazzHarmony = (
+  keys: JazzLayerKey[],        // e.g. ["vox_ah", "vox_ah_hi", "vox_ah_low"]
+  baseVolume = 0.55,
+  when?: number
+) => {
+  const ctx = getAudioContext();
+  const t = (when ?? ctx.currentTime) + 0.01;
+
+  const pans = [-0.18, 0, 0.18];
+  const vols = [baseVolume * 0.85, baseVolume, baseVolume * 0.8];
+
+  keys.slice(0, 3).forEach((k, i) => {
+    playJazzLayer(k, vols[i] ?? baseVolume, pans[i] ?? 0, t);
+  });
+};
+
+export const playGenreLayerStack = (
+  genreId: string | undefined,
+  stepIndex: number,
+  when: number,
+  intensity = 1 // 0..1
+) => {
+  if (!genreId) return;
+
+  const id = genreId as GenreId;
+  const recipe = GENRE_LAYER_RECIPES[id];
+  if (!recipe) return;
+
+  const steps = stepGroup(recipe.triggerSteps);
+  if (!steps.includes(stepIndex)) return;
+
+  const prob = clamp01local(recipe.probability * clamp01local(intensity));
+  if (!chanceLocal(prob)) return;
+
+  recipe.events.forEach((ev) => {
+    const offsets = ev.offsets?.length ? ev.offsets : [0, 0.01, 0.02];
+    const baseVol = ev.volume * (0.7 + 0.6 * clamp01local(intensity));
+    const panJitter = randLocal(-0.06, 0.06);
+
+    ev.keys.slice(0, 3).forEach((k, i) => {
+      const off = offsets[i] ?? offsets[offsets.length - 1] ?? 0;
+      playJazzLayer(
+        k,
+        baseVol * (i === 1 ? 1 : 0.85),
+        (ev.pan ?? 0) + panJitter + (i - 1) * 0.12,
+        when + off
+      );
+    });
+  });
+};
+
+export const playHarmonySyllables = (opts: HarmonySyllableOptions) => {
+  initAudio();
+
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") void ctx.resume();
+
+  if (!syllableSynth) syllableSynth = makeSyllableSynth(ctx);
+  syllableSynth.out.connect(masterPreGain!);
+
+  const bpm = opts.bpm;
+  const when = opts.when;
+  const bars = opts.bars ?? 1;
+  const subdivision = opts.subdivision ?? 8;
+  const _stepsPerBeat = subdivision === 8 ? 2 : subdivision === 16 ? 4 : subdivision === 4 ? 1 : 0.5;
+
+  const swing = clamp01(opts.swing ?? (opts.style === "jazzy" ? 0.22 : 0));
+  const intensity = clamp01(opts.intensity ?? 0.8);
+
+  const humanizeMs = opts.humanizeMs ?? 14;
+  const stepDur = beatDur(bpm) / (subdivision / 4); // 4 = quarter note reference
+  const totalSteps = Math.round(bars * 4 * (subdivision / 4)); // 4 beats per bar
+
+  const allowed = opts.syllables?.length ? opts.syllables : (["doo", "dah", "na", "la"] as SyllableKey[]);
+  const rootMidi = opts.rootMidi ?? 60;
+
+  // default voicing by style
+  const voicings =
+    opts.voicings ??
+    (opts.style === "gospel" ? [0, 4, 7, 12] :
+     opts.style === "jazzy"  ? [0, 3, 7, 10] :
+     opts.style === "tight"  ? [0, 4, 7] :
+                               [0, 4, 7, 12]);
+
+  for (let i = 0; i < totalSteps; i++) {
+    // rhythmic gate: more notes with more intensity
+    const density = 0.35 + 0.55 * intensity;
+    if (Math.random() > density) continue;
+
+    const human = (Math.random() * 2 - 1) * (humanizeMs / 1000);
+    const t = when + i * stepDur + human;
+
+    // swing (only meaningful on 8ths)
+    const swingSec = (i % 2 === 1 ? swing * (stepDur * 0.45) : 0);
+
+    const syll = allowed[(Math.random() * allowed.length) | 0];
+    const phoneme = SYLLABLE_BANK[syll][(Math.random() * SYLLABLE_BANK[syll].length) | 0];
+
+    // placeholder "sung" chord: stack oscillators
+    voicings.forEach((semi, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+
+      const detune = (Math.random() * 2 - 1) * 6; // cents
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(midiToHz(rootMidi + semi), t + swingSec);
+      osc.detune.setValueAtTime(detune, t + swingSec);
+
+      // envelope
+      const attack = 0.01;
+      const hold = 0.06 + 0.08 * intensity;
+      const release = 0.08 + 0.10 * intensity;
+
+      const base = 0.10 * intensity * (idx === 0 ? 1.0 : 0.7);
+      g.gain.setValueAtTime(0.0001, t + swingSec);
+      g.gain.exponentialRampToValueAtTime(base, t + swingSec + attack);
+      g.gain.setValueAtTime(base, t + swingSec + attack + hold);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + swingSec + attack + hold + release);
+
+      // shape with filter (vowel-ish)
+      const f = ctx.createBiquadFilter();
+      f.type = "bandpass";
+      f.Q.value = 1.0 + 0.5 * Math.random();
+
+      // simple vowel mapping
+      const vowel = phoneme.includes("oo") ? 900 : phoneme.includes("ah") ? 1200 : phoneme.includes("mm") ? 700 : 1100;
+      f.frequency.setValueAtTime(vowel + (Math.random() * 120 - 60), t + swingSec);
+
+      osc.connect(g);
+      g.connect(f);
+      f.connect(syllableSynth!.in);
+
+      osc.start(t + swingSec);
+      osc.stop(t + swingSec + attack + hold + release + 0.02);
+    });
+  }
+};
+export const playNote = (
+  midiNote: number,
+  volume = 0.8,
+  pan = 0,
+  when?: number
+) => {
+  initAudio();
+  const ctx = getAudioContext();
+  if (ctx.state === "suspended") void ctx.resume();
+
+  const t = (when ?? ctx.currentTime) + 0.005;
+
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  const p = ctx.createStereoPanner();
+
+  const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+  osc.frequency.setValueAtTime(freq, t);
+  osc.type = "sine";
+
+  p.pan.setValueAtTime(Math.max(-1, Math.min(1, pan)), t);
+
+  // quick pluck envelope
+  gain.gain.setValueAtTime(0.0001, t);
+  gain.gain.exponentialRampToValueAtTime(volume, t + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.25);
+
+  osc.connect(gain);
+  gain.connect(p);
+  p.connect(masterPreGain!);
+
+  osc.start(t);
+  osc.stop(t + 0.3);
+};
+
+
+// -----------------------------
+// Harmony Syllables Engine
+// -----------------------------
+export type SyllableKey =
+  | "doo"
+  | "dah"
+  | "ba"
+  | "na"
+  | "la"
+  | "oh"
+  | "mm"
+  | "yah";
+
+const SYLLABLE_BANK: Record<SyllableKey, string[]> = {
+  doo: ["doo", "du", "dú"],
+  dah: ["dah", "da"],
+  ba: ["ba", "bah"],
+  na: ["na", "nah"],
+  la: ["la", "lah"],
+  oh: ["oh", "ooh"],
+  mm: ["mm", "mmm"],
+  yah: ["yah", "ya"],
+};
+
+export type HarmonySyllableStyle = "tight" | "smooth" | "gospel" | "jazzy";
+
+export type HarmonySyllableOptions = {
+  bpm: number;
+  when: number;               // start time (AudioContext time)
+  bars?: number;              // default 1
+  subdivision?: 2 | 4 | 8 | 16; // default 8ths
+  swing?: number;             // 0..0.6 (jazzy)
+  intensity?: number;         // 0..1
+  style?: HarmonySyllableStyle;
+  rootMidi?: number;          // fallback if no chord map
+  syllables?: SyllableKey[];  // allowed syllables
+  voicings?: number[];        // semitone offsets (e.g. [0, 4, 7] for triad)
+  humanizeMs?: number;        // default 14ms
+};
+
+
+
+const beatDur = (bpm: number) => 60 / Math.max(1, bpm);
+
+const _swingOffset = (stepIndex: number, stepsPerBeat: number, swing = 0) => {
+  // offset every 2nd 8th note (classic swing feel)
+  if (stepsPerBeat !== 2) return 0;
+  return stepIndex % 2 === 1 ? swing * (0.5 * beatDur(120)) : 0; // scaled later
+};
+
+
+// -----------------------------
+// Genre → Jazz Layer Stack Mapping (plug-and-play)
+// -----------------------------
+
+type GenreId = "gospel" | "afrobeat" | "lofi" | "house" | "amapiano" | "trap-soul" | "synthwave";
+
+type LayerEvent = {
+  keys: JazzLayerKey[];   // stacked layers
+  volume: number;         // base volume for stack
+  pan?: number;           // overall pan offset
+  // timing offsets in seconds relative to `when`
+  offsets?: number[];     // e.g. [0, 0.01, 0.02] to “spread” layers
+};
+
+type GenreLayerRecipe = {
+  // which steps to trigger on (0..15)
+  triggerSteps: number[] | "offbeats" | "downbeats" | "syncopated";
+  // stack behavior
+  events: LayerEvent[];
+  // simple density control
+  probability: number; // 0..1 chance per trigger
+};
+
+// Helper to compute step groups
+function stepGroup(group: GenreLayerRecipe["triggerSteps"]): number[] {
+  if (Array.isArray(group)) return group;
+
+  switch (group) {
+    case "downbeats":
+      return [0, 4, 8, 12];
+    case "offbeats":
+      return [2, 6, 10, 14];
+    case "syncopated":
+      return [3, 7, 11, 15];
+    default:
+      return [0, 4, 8, 12];
+  }
+}
+
+// Main recipes (tweak volumes to taste)
+const GENRE_LAYER_RECIPES: Record<GenreId, GenreLayerRecipe> = {
+  gospel: {
+    triggerSteps: "downbeats",
+    probability: 0.75,
+    events: [
+      // Warm worship bed
+      { keys: ["RHODES", "PIANO"], volume: 0.42, offsets: [0, 0.012] },
+      // Optional horn lift (rare)
+      { keys: ["HORNS"], volume: 0.22, offsets: [0.02] },
+    ],
+  },
+
+  afrobeat: {
+    triggerSteps: "offbeats",
+    probability: 0.7,
+    events: [
+      // Rhodes + horns stabs on offbeats
+      { keys: ["RHODES", "HORNS"], volume: 0.38, offsets: [0, 0.008] },
+      // Upright bounce under it
+      { keys: ["UPRIGHT_BASS"], volume: 0.30, offsets: [0] },
+    ],
+  },
+
+  lofi: {
+    triggerSteps: "syncopated",
+    probability: 0.65,
+    events: [
+      // Lofi = Rhodes bed + soft piano
+      { keys: ["RHODES", "PIANO"], volume: 0.32, offsets: [0, 0.015] },
+      // Upright bass taps (very soft)
+      { keys: ["UPRIGHT_BASS"], volume: 0.22, offsets: [0.01] },
+    ],
+  },
+
+  // defaults for others (can refine later)
+  house: {
+    triggerSteps: "downbeats",
+    probability: 0.55,
+    events: [{ keys: ["PIANO"], volume: 0.28, offsets: [0] }],
+  },
+  amapiano: {
+    triggerSteps: "offbeats",
+    probability: 0.6,
+    events: [{ keys: ["PIANO", "UPRIGHT_BASS"], volume: 0.30, offsets: [0, 0.01] }],
+  },
+  "trap-soul": {
+    triggerSteps: [0, 8, 12],
+    probability: 0.45,
+    events: [{ keys: ["RHODES"], volume: 0.26, offsets: [0] }],
+  },
+  synthwave: {
+    triggerSteps: "downbeats",
+    probability: 0.5,
+    events: [{ keys: ["HORNS"], volume: 0.22, offsets: [0] }],
+  },
+};
+
+const midiToHz = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
+
+const makeSyllableSynth = (ctx: AudioContext) => {
+  const out = ctx.createGain();
+  out.gain.value = 0.9;
+
+  const filter = ctx.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 1200;
+  filter.Q.value = 1.2;
+
+  filter.connect(out);
+
+  return { in: filter, out };
+};
+
+let syllableSynth: ReturnType<typeof makeSyllableSynth> | null = null;
+
+
 
 // -----------------------------
 // Existing synth voices (kept)
@@ -863,3 +1268,8 @@ const play808 = (ctx: AudioContext, output: AudioNode, t: number) => {
   osc.start(t);
   osc.stop(t + 0.9);
 };
+
+
+
+ 
+

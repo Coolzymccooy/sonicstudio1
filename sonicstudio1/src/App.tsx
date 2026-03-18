@@ -29,15 +29,12 @@ import {
   Disc,
   Loader2,
   Settings,
-  Mic,
   Library,
-  Save,
   Scissors,
   User as UserIcon,
   LogOut,
   Radio,
   HelpCircle,
-  RefreshCw,
 } from 'lucide-react';
 
 import {
@@ -47,8 +44,14 @@ import {
   setupLiveVocalChain,
   unlockAudioContext,
   getMasterRecordingStream,
+  getAudioContext,
   suspendAudio,
-} from './services/audioEngine';
+  playJazzHarmony,
+  playGenreLayerStack,
+  playHarmonySyllables,
+  playNote,
+} from "./services/audioEngine";
+
 
 
 // Default Tracks with a basic pattern
@@ -130,7 +133,7 @@ function App() {
   const [bpm, setBpm] = useState(120);
   const [currentStep, setCurrentStep] = useState(0);
   const [isRecordingMic, setIsRecordingMic] = useState(false);
-  const [activeRecordingTrackId, setActiveRecordingTrackId] = useState<string | null>(null);
+  const [, setActiveRecordingTrackId] = useState<string | null>(null);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -169,6 +172,16 @@ function App() {
 
   const peakDecayTimerRef = useRef<number | null>(null);
   const clipTimerRef = useRef<number | null>(null);
+  // --- Swing + scheduler (true micro-timing) ---
+const swingAmountRef = useRef(0.18); // 0..0.30 (boom bap sweet spot)
+const humanizeMsRef = useRef(10);    // tiny timing drift (0..20ms)
+const lookAheadMs = 25;             // scheduler tick rate
+const scheduleAheadSec = 0.12;      // how far ahead we schedule
+
+const nextNoteTimeRef = useRef<number>(0);
+const schedulerTimerRef = useRef<number | null>(null);
+const selectedGenreIdRef = useRef<string | undefined>(undefined);
+
 
   // Mic Recording Refs
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -178,6 +191,17 @@ function App() {
   useEffect(() => {
     tracksRef.current = tracks;
   }, [tracks]);
+  
+// Keep scheduler-aware genre ref in sync with UI
+useEffect(() => {
+  // selectedGenre comes from Grade1Mode via state logic
+  // If no genre selected, scheduler will safely do nothing
+  selectedGenreIdRef.current = (window as Record<string, unknown>).__ACTIVE_GENRE_ID__ as string | undefined;
+}, []);
+
+
+
+  
 
   // LOAD PERSISTENCE - SAFEGUARDED
   useEffect(() => {
@@ -202,7 +226,7 @@ function App() {
     if (projects) {
       try {
         setSavedProjects(JSON.parse(projects));
-      } catch {}
+      } catch { /* ignored */ }
     }
 
     // 3. Load User
@@ -266,7 +290,7 @@ function App() {
     }
   };
 
-  const handlePanicRefresh = () => {
+  const _handlePanicRefresh = () => {
     setIsReloading(true);
     setTimeout(() => {
       try {
@@ -303,62 +327,135 @@ function App() {
   };
 
   // Audio Interval
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval> | undefined;
-
-    if (isPlaying && !isReloading) {
-      initAudio().catch(console.error);
-      const stepTime = (60 * 1000) / bpm / 4;
-
-      interval = setInterval(() => {
-        setCurrentStep((prevStep) => {
-          const nextStep = (prevStep + 1) % 16;
-          const currentTracks = tracksRef.current;
-
-          currentTracks.forEach((track) => {
-           const step = track.steps[nextStep];
-if (step.active && !track.muted) {
-  const anySolo = currentTracks.some((t) => t.solo);
-  if (anySolo && !track.solo) return;
-
-  const vel = typeof step.velocity === "number" ? step.velocity : 1;
-  const vol = Math.max(0, Math.min(1, track.volume * vel));
-
-  const swing = 0.14; // 0..0.25 good range for boom bap
-const isOdd16th = nextStep % 2 === 1;
-const swingSeconds = isOdd16th ? (60 / bpm / 4) * swing : 0;
-
-// schedule slightly later
-setTimeout(() => {
-  playSound(track.type, vol, track.pan, track.audioBuffer);
-}, swingSeconds * 1000);
-            }
-          });
-
-          return nextStep;
-        });
-      }, stepTime);
-    } else {
-      suspendAudio();
+ useEffect(() => {
+  if (!isPlaying) {
+    if (schedulerTimerRef.current) {
+      window.clearInterval(schedulerTimerRef.current);
+      schedulerTimerRef.current = null;
     }
+    return;
+  }
 
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isPlaying, bpm, isReloading]);
+  const ctx = getAudioContext();
+  const secondsPer16th = 60 / bpm / 4;
 
-  // Master Recording Timer
-  useEffect(() => {
-    let interval: any;
+  // Start scheduling from "now"
+  nextNoteTimeRef.current = ctx.currentTime + 0.05;
+
+  const scheduleStep = (stepIndex: number, when: number) => {
+    const currentTracks = tracksRef.current; // use your existing tracks ref if you have one
+    const anySolo = currentTracks.some((t) => t.solo);
+
+    currentTracks.forEach((track) => {
+      if (track.muted) return;
+      if (anySolo && !track.solo) return;
+
+      const step = track.steps[stepIndex];
+      if (!step?.active) return;
+
+      const vel = typeof step.velocity === "number" ? step.velocity : 1;
+      const vol = Math.max(0, Math.min(1, track.volume * vel));
+      // Jazzy syllable harmony for VOCAL lane (optional magic)
+     if (track.type === InstrumentType.VOCAL) {
+  // pick your real keys here (must exist in jazzLayers)
+  // example placeholders:
+  playJazzHarmony(["RHODES", "PIANO", "HORNS"], vol, when);
+  return;
+}
+ playGenreLayerStack(
+    selectedGenreIdRef.current,
+    stepIndex,
+    when,
+    0.85
+  );
+
+  // 🎤 Jazzy harmony syllables (Pro-style backing vocals)
+// Fire once per bar to avoid clutter
+if (stepIndex % 4 === 0) {
+  playHarmonySyllables({
+    bpm,
+    when,
+    bars: 1,
+    subdivision: 8,
+    swing: 0.22,
+    intensity: 0.85,
+    style: "jazzy",
+    rootMidi: 60, // C — later we’ll follow real chords
+  });
+}
+
+
+
+// 🎷 Genre layer stack (jazzy magic), scheduled tightly with the beat.
+// Use your app state/refs to get the current genre id (example below).
+
+      playSound(track.type, vol, track.pan, track.audioBuffer ?? null, when);
+    });
+  };
+
+  const computeSwingDelaySec = (stepIndex: number) => {
+    // Swing delays the "off" 16ths (odd indices)
+    const isOff16th = stepIndex % 2 === 1;
+    if (!isOff16th) return 0;
+
+    const swing = Math.max(0, Math.min(0.35, swingAmountRef.current));
+    return secondsPer16th * swing;
+  };
+
+  const computeHumanizeDelaySec = () => {
+    const ms = Math.max(0, Math.min(25, humanizeMsRef.current));
+    return ((Math.random() * 2 - 1) * ms) / 1000;
+  };
+
+  const scheduler = () => {
+    const now = ctx.currentTime;
+
+    while (nextNoteTimeRef.current < now + scheduleAheadSec) {
+      // Determine the step we are scheduling next
+      setCurrentStep((prev) => {
+        const nextStep = (prev + 1) % 16;
+
+        const swingDelay = computeSwingDelaySec(nextStep);
+        const humanDelay = computeHumanizeDelaySec();
+        const when = nextNoteTimeRef.current + swingDelay + humanDelay;
+
+        scheduleStep(nextStep, when);
+
+        // advance timeline
+        nextNoteTimeRef.current += secondsPer16th;
+
+        return nextStep;
+      });
+
+      // Important: break the while because setState is async.
+      // We'll keep scheduling via the interval ticks.
+      break;
+    }
+  };
+
+  schedulerTimerRef.current = window.setInterval(scheduler, lookAheadMs);
+
+  return () => {
+    if (schedulerTimerRef.current) {
+      window.clearInterval(schedulerTimerRef.current);
+      schedulerTimerRef.current = null;
+    }
+  };
+}, [isPlaying, bpm]);
+
+
+   // Master Recording Timer
+   useEffect(() => {
+    let interval: ReturnType<typeof setInterval> | undefined;
     if (isRecordingMaster) {
       interval = setInterval(() => setMasterRecTime((prev) => prev + 1), 1000);
     } else {
       setMasterRecTime(0);
     }
     return () => clearInterval(interval);
-  }, [isRecordingMaster]);
+   }, [isRecordingMaster]);
 
-  const togglePlay = async () => {
+   const togglePlay = async () => {
     if (!isPlaying) {
       try {
         await initAudio();
@@ -367,9 +464,9 @@ setTimeout(() => {
       }
     }
     setIsPlaying((v) => !v);
-  };
+   };
 
-  const handleAddTrack = (type: InstrumentType, name: string) => {
+   const handleAddTrack = (type: InstrumentType, name: string) => {
     const colors = ['red', 'green', 'yellow', 'cyan', 'teal'];
     const randomColor = colors[Math.floor(Math.random() * colors.length)];
 
@@ -561,7 +658,7 @@ setTimeout(() => {
     }
   };
 
-  const handleAIAction = (action: string, params: any) => {
+  const handleAIAction = (action: string, params: Record<string, string>) => {
     switch (action) {
       case 'SET_BPM': {
         const newBpm = parseInt(params.value);
@@ -585,7 +682,7 @@ setTimeout(() => {
       await initAudio();
 
       if (!meterCtxRef.current) {
-        meterCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        meterCtxRef.current = new (window.AudioContext || (window as unknown as Record<string, typeof AudioContext>).webkitAudioContext)();
       }
       const ctx = meterCtxRef.current;
 
@@ -609,7 +706,7 @@ setTimeout(() => {
         const buf = meterDataRef.current;
 
         if (a && buf) {
-          a.getFloatTimeDomainData(buf as any);
+          a.getFloatTimeDomainData(buf as unknown as Float32Array<ArrayBuffer>);
 
           let sum = 0;
           let peak = 0;
@@ -676,7 +773,7 @@ setTimeout(() => {
       setMasterLevelDb(-120);
       setMasterPeakDb(-120);
       setMasterIsClipping(false);
-    } catch {}
+    } catch { /* ignored */ }
   };
 
   // Auto-start the meter in studio
@@ -685,7 +782,6 @@ setTimeout(() => {
     return () => {
       stopMasterMeterTap();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showLanding, isReloading]);
 
   // Peak-hold decay (falls slowly)
@@ -986,6 +1082,8 @@ setTimeout(() => {
             {mode === AppMode.GRADE_1 && (
               <Grade1Mode
                 tracks={tracks}
+                bpm={bpm}
+                onSetBpm={(n) => setBpm(Math.max(60, Math.min(220, n)))}
                 isPlaying={isPlaying}
                 currentStep={currentStep}
                 onTogglePlay={togglePlay}
@@ -995,11 +1093,14 @@ setTimeout(() => {
                 isRecording={isRecordingMic}
                 onAddTrack={handleAddTrack}
                 onSaveProject={handleManualSave}
+                onPlayNote={(midi: number) => playNote(midi, 0.85, 0)}
               />
             )}
 
             {mode === AppMode.PRO && (
               <ProMode
+                bpm={bpm}
+                onSetBpm={(n) => setBpm(Math.max(60, Math.min(220, n)))}
                 tracks={tracks}
                 isPlaying={isPlaying}
                 currentStep={currentStep}
