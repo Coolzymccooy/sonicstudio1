@@ -1161,7 +1161,7 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
                   onClick={() => {
                     setSelectedGenre(g);
                     setSelectedVariations([]);
-                    (window as unknown as Record<string, string>).__ACTIVE_GENRE_ID__ = g.id;
+                    window.__ACTIVE_GENRE_ID__ = g.id;
                   }}
                   className="group relative h-24 rounded-2xl bg-slate-50 hover:bg-white border-2 border-transparent hover:border-indigo-500 shadow-sm hover:shadow-xl transition-all cursor-pointer overflow-hidden flex flex-col items-center justify-center gap-2"
                 >
@@ -1235,3 +1235,4 @@ export const Grade1Mode: React.FC<Grade1ModeProps> = ({
     </div>
   );
 };
+

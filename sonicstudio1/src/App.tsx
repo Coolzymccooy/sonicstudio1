@@ -196,7 +196,7 @@ const selectedGenreIdRef = useRef<string | undefined>(undefined);
 useEffect(() => {
   // selectedGenre comes from Grade1Mode via state logic
   // If no genre selected, scheduler will safely do nothing
-  selectedGenreIdRef.current = (window as Record<string, unknown>).__ACTIVE_GENRE_ID__ as string | undefined;
+  selectedGenreIdRef.current = window.__ACTIVE_GENRE_ID__;
 }, []);
 
 
@@ -1103,8 +1103,6 @@ if (stepIndex % 4 === 0) {
                 onSetBpm={(n) => setBpm(Math.max(60, Math.min(220, n)))}
                 tracks={tracks}
                 isPlaying={isPlaying}
-                currentStep={currentStep}
-                onUpdateStep={updateTrackStep}
                 onUpdateVol={updateTrackVol}
                 onUpdateTracks={setTracks}
               />
@@ -1159,3 +1157,5 @@ if (stepIndex % 4 === 0) {
 }
 
 export default App;
+
+
